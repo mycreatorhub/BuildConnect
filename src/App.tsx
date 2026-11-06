@@ -132,14 +132,15 @@ export default function App() {
 
   useEffect(() => {
     if (!supabase || !activeConversation) return;
+    const client = supabase;
     void loadChatMessages(activeConversation.id);
-    const channel = supabase.channel(`chat-${activeConversation.id}`).on("postgres_changes", {
+    const channel = client.channel(`chat-${activeConversation.id}`).on("postgres_changes", {
       event: "INSERT", schema: "public", table: "messages", filter: `conversation_id=eq.${activeConversation.id}`
     }, (payload) => {
       const incoming = payload.new as ChatMessage;
       setChatMessages(current => current.some(m => m.id === incoming.id) ? current : [...current, incoming]);
     }).subscribe();
-    return () => { void supabase.removeChannel(channel); };
+    return () => { void client.removeChannel(channel); };
   }, [activeConversation?.id]);
 
   const filteredJobs = useMemo(() => {
