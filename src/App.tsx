@@ -69,6 +69,7 @@ export default function App() {
   const [lang, setLang] = useState<"en" | "fil">("fil");
   const t = copy[lang];
   const [session, setSession] = useState<any>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -87,8 +88,10 @@ export default function App() {
 
   useEffect(() => {
     if (!supabase) return;
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data } = supabase.auth.onAuthStateChange((_event, next) => setSession(next));
+    const { data } = supabase.auth.onAuthStateChange((_event, next) => {
+      setSession(next);
+      setAuthReady(true);
+    });
     return () => data.subscription.unsubscribe();
   }, []);
 
@@ -191,6 +194,8 @@ export default function App() {
   }
 
   if (!isSupabaseConfigured) return <main className="setup-screen"><div className="brand-mark"><Hammer size={30}/></div><h1>BuildConnect</h1><h2>{t.setup}</h2><p>{t.setupText}</p><button className="language" onClick={() => setLang(lang === "fil" ? "en" : "fil")}><Languages size={16}/>{t.switch}</button></main>;
+
+  if (!authReady) return <main className="setup-screen"><div className="brand-mark"><Hammer size={30}/></div><h1>BuildConnect</h1><p>{t.loading}</p></main>;
 
   if (!session) return <main className="auth-layout">
     <section className="hero-panel"><div className="brand"><span className="brand-mark"><Hammer size={24}/></span><b>BuildConnect</b></div><div className="hero-copy"><span className="eyebrow">TRABAHO • KONEKSYON • PAG-ASA</span><h1>{t.tagline}</h1><p>{t.intro}</p><div className="hero-points"><span><CheckCircle2/> Walang diploma requirement</span><span><CheckCircle2/> Direktang koneksyon</span><span><CheckCircle2/> Para sa lokal na manggagawa</span></div></div><div className="hero-foot">Made for Filipino communities</div></section>
