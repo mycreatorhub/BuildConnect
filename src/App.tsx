@@ -16,7 +16,9 @@ type Job = {
   city_municipality: string; barangay: string; status: string; created_at: string;
   job_categories?: Category;
 };
-type Bid = { id: string; job_id: string; worker_id: string; proposed_price: number; estimated_days: number; proposal: string; status: string; created_at: string; profiles?: { full_name: string } };
+type Bid = { id: string; job_id: string; worker_id: string; proposed_price: number; estimated_days: number; proposal: string; status: string; created_at: string; profiles?: { full_name: string }; job_posts?: { title: string; city_municipality: string; province: string; client_id?: string } };
+type Conversation = { id: string; job_id: string; client_id: string; worker_id: string };
+type ChatMessage = { id: string; conversation_id: string; sender_id: string; body: string; created_at: string };
 
 const copy = {
   en: {
@@ -76,6 +78,9 @@ export default function App() {
   const [myJobs, setMyJobs] = useState<Job[]>([]);
   const [myBids, setMyBids] = useState<Bid[]>([]);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [messageDraft, setMessageDraft] = useState("");
   const [tab, setTab] = useState<"jobs" | "mine" | "bids">("jobs");
   const [query, setQuery] = useState("");
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
@@ -125,11 +130,61 @@ export default function App() {
     }
   }
 
+  useEffect(() => {
+    if (!supabase || !activeConversation) return;
+    void loadChatMessages(activeConversation.id);
+    const channel = supabase.channel(`chat-${activeConversation.id}`).on("postgres_changes", {
+      event: "INSERT", schema: "public", table: "messages", filter: `conversation_id=eq.${activeConversation.id}`
+    }, (payload) => {
+      const incoming = payload.new as ChatMessage;
+      setChatMessages(current => current.some(m => m.id === incoming.id) ? current : [...current, incoming]);
+    }).subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [activeConversation?.id]);
+
   const filteredJobs = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return jobs;
     return jobs.filter(j => [j.title, j.description, j.region, j.province, j.city_municipality, j.barangay, j.job_categories?.name].some(v => (v || "").toLowerCase().includes(q)));
   }, [jobs, query]);
+
+  async function loadChatMessages(conversationId: string) {
+    if (!supabase) return;
+    const { data, error: loadError } = await supabase.from("messages").select("id,conversation_id,sender_id,body,created_at").eq("conversation_id", conversationId).order("created_at", { ascending: true });
+    if (loadError) { setError(`Could not load messages: ${loadError.message}`); return; }
+    setChatMessages((data || []) as ChatMessage[]);
+  }
+
+  async function startChat(jobId: string, workerId: string) {
+    if (!supabase || !session?.user) return;
+    setError(""); setChatMessages([]); setBusy(true);
+    const { data: job, error: jobError } = await supabase.from("job_posts").select("id,client_id").eq("id", jobId).single();
+    if (jobError || !job) { setBusy(false); setError(jobError?.message || "Job not found."); return; }
+    let { data: conversation, error: findError } = await supabase.from("conversations").select("id,job_id,client_id,worker_id").eq("job_id", jobId).eq("worker_id", workerId).maybeSingle();
+    if (findError) { setBusy(false); setError(findError.message); return; }
+    if (!conversation) {
+      const { data: created, error: createError } = await supabase.from("conversations").insert({ job_id: jobId, client_id: job.client_id, worker_id: workerId }).select("id,job_id,client_id,worker_id").single();
+      if (createError) {
+        const { data: existing } = await supabase.from("conversations").select("id,job_id,client_id,worker_id").eq("job_id", jobId).eq("worker_id", workerId).maybeSingle();
+        if (!existing) { setBusy(false); setError(`Could not start chat: ${createError.message}`); return; }
+        conversation = existing;
+      } else conversation = created;
+    }
+    setActiveConversation(conversation as Conversation);
+    setBusy(false);
+  }
+
+  async function sendChatMessage(e: FormEvent) {
+    e.preventDefault();
+    const body = messageDraft.trim();
+    if (!supabase || !activeConversation || !session?.user || !body) return;
+    setBusy(true);
+    const { data, error: sendError } = await supabase.from("messages").insert({ conversation_id: activeConversation.id, sender_id: session.user.id, body }).select("id,conversation_id,sender_id,body,created_at").single();
+    setBusy(false);
+    if (sendError) { setError(`Message not sent: ${sendError.message}`); return; }
+    setChatMessages(current => current.some(m => m.id === data.id) ? current : [...current, data as ChatMessage]);
+    setMessageDraft("");
+  }
 
   async function handleAuth(e: FormEvent) {
     e.preventDefault(); setError(""); setNotice(""); setBusy(true);
@@ -248,10 +303,11 @@ export default function App() {
         {filteredJobs.length===0 ? <div className="empty"><BriefcaseBusiness size={30}/><p>{t.noJobs}</p></div> : <div className="job-grid">{filteredJobs.map(job=><article className="job-card" key={job.id} style={{cursor: profile?.role==="worker" ? "pointer" : "default"}} onClick={()=>{if(profile?.role==="worker") setSelectedJob(job);}}>
 <div className="card-top"><span className="category-pill">{lang==="fil"?(job.job_categories?.name_fil || job.job_categories?.name):(job.job_categories?.name || "Construction")}</span><span className="status-dot">● {job.status==="open" ? t.open : job.status}</span></div><h3>{job.title}</h3><p className="job-description">{job.description}</p><div className="meta"><MapPin size={16}/>{[job.barangay,job.city_municipality,job.province].filter(Boolean).join(", ")}</div><div className="card-bottom"><b>{job.budget_min || job.budget_max ? `₱${Number(job.budget_min||0).toLocaleString()} – ₱${Number(job.budget_max||0).toLocaleString()}` : t.budgetUnspecified}</b>{profile?.role==="worker" && <button className="primary small" onClick={e=>{e.stopPropagation();setSelectedJob(job);}}>{t.send}</button>}</div></article>)}</div>}
       </section>}
-      {tab==="mine" && profile?.role==="client" && <section><div className="section-heading"><div><h2>{t.myJobs}</h2><p>{t.jobAreaPrivacy}</p></div></div><div className="content-grid"><form className="form-card" onSubmit={handlePost}><h3><Plus size={19}/>{t.post}</h3><label>{t.category}<select required value={jobForm.category_id} onChange={e=>setJobForm({...jobForm,category_id:e.target.value})}><option value="">—</option>{categories.map(c=><option key={c.id} value={c.id}>{lang==="fil"?c.name_fil:c.name}</option>)}</select></label><label>{t.title}<input required value={jobForm.title} onChange={e=>setJobForm({...jobForm,title:e.target.value})}/></label><label>{t.description}<textarea required rows={4} value={jobForm.description} onChange={e=>setJobForm({...jobForm,description:e.target.value})}/></label><div className="two-col"><label>{t.min}<input type="number" min="0" value={jobForm.budget_min} onChange={e=>setJobForm({...jobForm,budget_min:e.target.value})}/></label><label>{t.max}<input type="number" min="0" value={jobForm.budget_max} onChange={e=>setJobForm({...jobForm,budget_max:e.target.value})}/></label></div><h4>{t.area}</h4><div className="two-col"><label>{t.region}<input required value={jobForm.region} onChange={e=>setJobForm({...jobForm,region:e.target.value})}/></label><label>{t.province}<input required value={jobForm.province} onChange={e=>setJobForm({...jobForm,province:e.target.value})}/></label><label>{t.city}<input required value={jobForm.city_municipality} onChange={e=>setJobForm({...jobForm,city_municipality:e.target.value})}/></label><label>{t.barangay}<input required value={jobForm.barangay} onChange={e=>setJobForm({...jobForm,barangay:e.target.value})}/></label></div><button className="primary full" disabled={busy}>{busy?<LoaderCircle className="spin"/>:<Plus size={17}/>}{t.publish}</button></form><div className="my-posts"><h3>{t.myJobs}</h3>{myJobs.length===0?<div className="empty compact">{t.noPosts}</div>:myJobs.map(j=><div className="mini-job" key={j.id} onClick={()=>void openApplications(j)} style={{cursor:"pointer"}}><b>{j.title}</b><span>{j.city_municipality}, {j.province} · {j.status}</span><button className="text-button" onClick={e=>{e.stopPropagation();void openApplications(j);}}>{t.applications}</button>{selectedJob?.id===j.id && <div className="bid-list">{myBids.length===0?<small>{t.noBids}</small>:myBids.map(b=><div className="bid-row" key={b.id}><b>{b.profiles?.full_name || "Worker"}</b><span>₱{Number(b.proposed_price).toLocaleString()} · {b.estimated_days} days</span><p>{b.proposal}</p>{b.status==="pending"&&<button className="primary small" disabled={busy} onClick={()=>approveBid(b.id)}>{t.approve}</button>}<small>{b.status}</small></div>)}</div>}</div>)}</div></div></section>}
-      {tab==="bids" && profile?.role==="worker" && <section><div className="section-heading"><div><h2>{t.bids}</h2></div></div>{myBids.length===0?<div className="empty">{t.noBids}</div>:myBids.map(b=><div className="bid-row standalone" key={b.id}><b>{(b as any).job_posts?.title || "Job"}</b><span>₱{Number(b.proposed_price).toLocaleString()} · {b.estimated_days} days</span><p>{b.proposal}</p><small>{b.status}</small></div>)}</section>}
+      {tab==="mine" && profile?.role==="client" && <section><div className="section-heading"><div><h2>{t.myJobs}</h2><p>{t.jobAreaPrivacy}</p></div></div><div className="content-grid"><form className="form-card" onSubmit={handlePost}><h3><Plus size={19}/>{t.post}</h3><label>{t.category}<select required value={jobForm.category_id} onChange={e=>setJobForm({...jobForm,category_id:e.target.value})}><option value="">—</option>{categories.map(c=><option key={c.id} value={c.id}>{lang==="fil"?c.name_fil:c.name}</option>)}</select></label><label>{t.title}<input required value={jobForm.title} onChange={e=>setJobForm({...jobForm,title:e.target.value})}/></label><label>{t.description}<textarea required rows={4} value={jobForm.description} onChange={e=>setJobForm({...jobForm,description:e.target.value})}/></label><div className="two-col"><label>{t.min}<input type="number" min="0" value={jobForm.budget_min} onChange={e=>setJobForm({...jobForm,budget_min:e.target.value})}/></label><label>{t.max}<input type="number" min="0" value={jobForm.budget_max} onChange={e=>setJobForm({...jobForm,budget_max:e.target.value})}/></label></div><h4>{t.area}</h4><div className="two-col"><label>{t.region}<input required value={jobForm.region} onChange={e=>setJobForm({...jobForm,region:e.target.value})}/></label><label>{t.province}<input required value={jobForm.province} onChange={e=>setJobForm({...jobForm,province:e.target.value})}/></label><label>{t.city}<input required value={jobForm.city_municipality} onChange={e=>setJobForm({...jobForm,city_municipality:e.target.value})}/></label><label>{t.barangay}<input required value={jobForm.barangay} onChange={e=>setJobForm({...jobForm,barangay:e.target.value})}/></label></div><button className="primary full" disabled={busy}>{busy?<LoaderCircle className="spin"/>:<Plus size={17}/>}{t.publish}</button></form><div className="my-posts"><h3>{t.myJobs}</h3>{myJobs.length===0?<div className="empty compact">{t.noPosts}</div>:myJobs.map(j=><div className="mini-job" key={j.id} onClick={()=>void openApplications(j)} style={{cursor:"pointer"}}><b>{j.title}</b><span>{j.city_municipality}, {j.province} · {j.status}</span><button className="text-button" onClick={e=>{e.stopPropagation();void openApplications(j);}}>{t.applications}</button>{selectedJob?.id===j.id && <div className="bid-list">{myBids.length===0?<small>{t.noBids}</small>:myBids.map(b=><div className="bid-row" key={b.id}><b>{b.profiles?.full_name || "Worker"}</b><span>₱{Number(b.proposed_price).toLocaleString()} · {b.estimated_days} days</span><p>{b.proposal}</p>{b.status==="pending"&&<button className="primary small" disabled={busy} onClick={()=>approveBid(b.id)}>{t.approve}</button>}{b.status==="approved"&&<button className="primary small" disabled={busy} onClick={()=>void startChat(j.id,b.worker_id)}>Message worker</button>}<small>{b.status}</small></div>)}</div>}</div>)}</div></div></section>}
+      {tab==="bids" && profile?.role==="worker" && <section><div className="section-heading"><div><h2>{t.bids}</h2></div></div>{myBids.length===0?<div className="empty">{t.noBids}</div>:myBids.map(b=><div className="bid-row standalone" key={b.id}><b>{(b as any).job_posts?.title || "Job"}</b><span>₱{Number(b.proposed_price).toLocaleString()} · {b.estimated_days} days</span><p>{b.proposal}</p><small>{b.status}</small>{b.status==="approved"&&<button className="primary small" disabled={busy} onClick={()=>void startChat(b.job_id,b.worker_id)}>Message client</button>}</div>)}</section>}
     </main>
     {selectedJob && profile?.role==="worker" && <div className="modal-backdrop" onClick={()=>setSelectedJob(null)}><form className="modal" onSubmit={handleBid} onClick={e=>e.stopPropagation()}><button type="button" className="modal-close" onClick={()=>setSelectedJob(null)}><X/></button><span className="eyebrow">{t.proposal}</span><h2>{selectedJob.title}</h2><p className="job-description">{selectedJob.description}</p><p className="meta"><MapPin size={16}/>{[selectedJob.barangay,selectedJob.city_municipality,selectedJob.province].filter(Boolean).join(", ")}</p><p><b>{lang==="fil"?(selectedJob.job_categories?.name_fil || selectedJob.job_categories?.name):(selectedJob.job_categories?.name || "Construction")}</b></p><label>{t.price}<input required type="number" min="0" value={bidForm.proposed_price} onChange={e=>setBidForm({...bidForm,proposed_price:e.target.value})}/></label><label>{t.days}<input required type="number" min="1" value={bidForm.estimated_days} onChange={e=>setBidForm({...bidForm,estimated_days:e.target.value})}/></label><label>{t.proposal}<textarea required rows={4} value={bidForm.proposal} onChange={e=>setBidForm({...bidForm,proposal:e.target.value})}/></label>{error&&<p className="alert error">{error}</p>}<button className="primary full" disabled={busy}>{busy?<LoaderCircle className="spin"/>:<Send size={17}/>}{t.send}</button></form></div>}
+    {activeConversation && <div className="modal-backdrop" onClick={()=>setActiveConversation(null)}><section className="chat-modal" onClick={e=>e.stopPropagation()}><header className="chat-header"><div><span className="eyebrow">PRIVATE CHAT</span><h2>Job discussion</h2></div><button type="button" className="modal-close" onClick={()=>setActiveConversation(null)}><X/></button></header><div className="chat-messages">{chatMessages.length===0?<p className="chat-empty">No messages yet. Say hello and discuss the work details.</p>:chatMessages.map(m=><div className={`chat-bubble ${m.sender_id===session.user.id?"mine":"theirs"}`} key={m.id}><p>{m.body}</p><small>{new Date(m.created_at).toLocaleString()}</small></div>)}</div><form className="chat-compose" onSubmit={sendChatMessage}><textarea rows={2} value={messageDraft} onChange={e=>setMessageDraft(e.target.value)} placeholder="Write a message…"/><button className="primary" disabled={busy || !messageDraft.trim()}><Send size={17}/>Send</button></form></section></div>}
     <footer className="footer">BuildConnect · Trabaho. Koneksyon. Pag-asa.</footer>
   </div>;
 }
