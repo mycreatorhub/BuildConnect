@@ -135,7 +135,10 @@ export default function App() {
       if (authMode === "signup") {
         const { error: e1 } = await supabase.auth.signUp({
           email: auth.email, password: auth.password,
-          options: { data: { role: auth.role, full_name: auth.fullName.trim(), phone_number: auth.phone.trim() || null } }
+          options: {
+            data: { role: auth.role, full_name: auth.fullName.trim(), phone_number: auth.phone.trim() || null },
+            emailRedirectTo: "https://mycreatorhub.github.io/BuildConnect/"
+          }
         });
         if (e1) throw e1;
         setNotice(t.accountCreated);
