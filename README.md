@@ -27,11 +27,9 @@ BuildConnect is a mobile-first job marketplace connecting Filipino clients with 
 Never put a Supabase service-role or secret key in frontend code or GitHub Actions variables.
 
 ## Deployment
-The GitHub Actions workflow builds the Vite app and publishes `dist/` to GitHub Pages. Add repository Actions variables:
-- `VITE_SUPABASE_URL`
-- `VITE_SUPABASE_ANON_KEY`
+The public Supabase project URL and publishable key are configured in `.env.production`. This key is designed for browser use; never add a service-role or secret key. Row Level Security protects database records.
 
-Then enable GitHub Pages with **GitHub Actions** as the build and deployment source.
+The GitHub Actions workflow builds the Vite app and publishes `dist/` to GitHub Pages. In repository Settings → Pages, select **GitHub Actions** as the build and deployment source.
 
 ## Supabase schema
 The frontend targets the existing BuildConnect schema: `profiles`, `job_categories`, `job_posts`, `bids`, and related tables. Row Level Security must remain enabled.
